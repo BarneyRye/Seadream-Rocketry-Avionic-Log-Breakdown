@@ -1,9 +1,18 @@
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+//  File to convert log.csv file from avionics to:                                                  //
+//  LogAvgData.csv (Time, Temp(SHT4x and BMP280), Average Temp, Pressure and Altitude)              //
+//  LogMotionData.CSV (Time, Accelerations and Gyro Accelerations (Corrected to global Direction))  //
+//  ekf.csv (Roll, Pitch, Yaw, Velocites and Positions in global frame)                             //
+//      -> Used to plot 3D Graph via .m File                                                        //
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
 
+//Max data lines from the log
 #define maxData 100000
 
 typedef struct { //struct to store sensor data
@@ -21,7 +30,7 @@ typedef struct { //struct to store sensor data
   float gz; //Gyro Z in deg/s
 } Raw_data_struct;
 
-typedef struct { //struct to store sensor data
+typedef struct { //struct to store average data
   uint32_t time; //TIme of log in ms
   float humidity; //Humidity in %
   float temp_sens; //Temp in C from SHT4x
@@ -31,7 +40,7 @@ typedef struct { //struct to store sensor data
   float altitude; //Altitude in M from BMP180
 } avgdata;
 
-typedef struct { //struct to store sensor data
+typedef struct { //struct to store motion data
   uint32_t time; //TIme of log in ms
   float altitude; //Altitude in M from BMP180
   float ax; //Acceleration X in m/s^2
@@ -42,71 +51,62 @@ typedef struct { //struct to store sensor data
   float gz; //Gyro Z in deg/s
 } motiondata;
 
-typedef struct {
+typedef struct { //Struct to store EKF values
     float X[9];      // [roll, pitch, yaw, vx, vy, vz, x, y, z]
     float P[9][9];   // state covariance
     float Q[9][9];   // process noise covariance
     float R;         // measurement noise for altitude
 } ekf_state;
 
-
-typedef struct {
-    float x; // meters
-    float y; // meters
-    float z; // meters
-} world_position;
-
-
-
-uint8_t fileFind(char* fileName, uint8_t *index);
-uint8_t importData(Raw_data_struct *rawData, char *fileName, uint32_t *count);
-uint8_t fillAvgData(uint32_t dataPoints, Raw_data_struct *rawData, avgdata *avgData);
-uint8_t writeAvgData(avgdata *avgData, uint8_t index, uint32_t dataPoints);
-uint8_t fillMotionData(uint32_t dataPoints, Raw_data_struct *rawData, motiondata *motionData);
-uint8_t writeMotionData(motiondata *motionData, uint8_t index, uint32_t dataPoints);
-void ekf_init(ekf_state *state, const motiondata *m);
-void body_to_world(float roll, float pitch, float yaw,
+uint8_t fileFind(char* fileName, uint8_t *index); //Find file name
+uint8_t importData(Raw_data_struct *rawData, char *fileName, uint32_t *count); //Import data
+uint8_t fillAvgData(uint32_t dataPoints, Raw_data_struct *rawData, avgdata *avgData); //Fill average data struct
+uint8_t writeAvgData(avgdata *avgData, uint8_t index, uint32_t dataPoints); //Write average data file
+uint8_t fillMotionData(uint32_t dataPoints, Raw_data_struct *rawData, motiondata *motionData); //Fill motion data file
+uint8_t writeMotionData(motiondata *motionData, uint8_t index, uint32_t dataPoints); //Write motion data file
+void ekf_init(ekf_state *state, const motiondata *m); //Initialise Extended Kalman Filter
+void body_to_world(float roll, float pitch, float yaw, //Convert relative to world position
                    float ax, float ay, float az,
                    float *wx, float *wy, float *wz);
-void ekf_predict(ekf_state *state, const motiondata *m, float dt);
-void ekf_update_altitude(ekf_state *ekf, float alt_measure);
+void ekf_predict(ekf_state *state, const motiondata *m, float dt); //EKF prediction
+void ekf_update_altitude(ekf_state *ekf, float alt_measure); //EKF update wioth barometer altiude
 
-int main() {
-    char fileName[20];
-    uint8_t index = 1;
-    if (fileFind(fileName,&index) == 0) {return 0;}
-    uint32_t dataPoints=0;
-    Raw_data_struct rawData[maxData];
-    if (importData(rawData,fileName,&dataPoints) == 0) {return 0;}
+int main() { //Main function
+    char fileName[20]; //Filename store for log.csv
+    uint8_t index = 1; //Index for log iteration
+    if (fileFind(fileName,&index) == 0) {return 0;} //Call function to find and return file name
+    uint32_t dataPoints=0; //Number of data points
+    Raw_data_struct rawData[maxData];  //Create raw data struct
+    if (importData(rawData,fileName,&dataPoints) == 0) {return 0;} //Import data
 
-    avgdata *avgData = malloc(dataPoints * sizeof(*avgData));
+    avgdata *avgData = malloc(dataPoints * sizeof(*avgData)); //Allocate memory for avgData and motionData
     motiondata *motionData = malloc(dataPoints * sizeof(*motionData));
-    if (!avgData || !motionData) {
+    if (!avgData || !motionData) { //Error if allocation fail
         printf("ERROR: Memory allocation failed\n");
         return 0;
     }
 
-    if (fillAvgData(dataPoints,rawData,avgData) == 0) {return 0;}
-    if (writeAvgData(avgData,index,dataPoints) == 0) {return 0;}
-    free(avgData);
+    if (fillAvgData(dataPoints,rawData,avgData) == 0) {return 0;} //Fill average data struct from raw with calculations
+    if (writeAvgData(avgData,index,dataPoints) == 0) {return 0;} //Writes the average data file
+    free(avgData); //Unallocates memory
 
-    if (fillMotionData(dataPoints,rawData,motionData) == 0) {return 0;}
+    if (fillMotionData(dataPoints,rawData,motionData) == 0) {return 0;} //Same as above but for motion data
     if (writeMotionData(motionData,index,dataPoints) == 0) {return 0;}
 
-    ekf_state ekf;
-    ekf_init(&ekf, &motionData[0]);
+    ekf_state ekf; //Create EKF struct
+    ekf_init(&ekf, &motionData[0]); //Initialise EKF
 
-    char ekfFileName[50];
+    char ekfFileName[50]; //Get ekf File name
     sprintf(ekfFileName,"ekf%d.csv",index);
-    FILE *fekf = fopen(ekfFileName,"w");
-    if (!fekf) {
+    FILE *fekf = fopen(ekfFileName,"w"); //Open file for writing
+    if (!fekf) { //If it fails to open, stop
         printf("ERROR: Failed to open ekf.csv\n");
         return 0;
     }
-    fprintf(fekf,"Roll_R,Pitch_R,Yaw_R,Vx,Vy,Vz,X,Y,Z\n");
+    fprintf(fekf,"Roll_R,Pitch_R,Yaw_R,Vx,Vy,Vz,X,Y,Z\n"); //print headers
 
-    for (uint32_t i = 1; i < dataPoints; i++) {
-        float dt = (motionData[i].time - motionData[i-1].time) / 1000.0f;
+    for (uint32_t i = 1; i < dataPoints; i++) { //Repeat for all data points
+        float dt = (motionData[i].time - motionData[i-1].time) / 1000.0f; //Get change in time between points
 
         // Predict step
         ekf_predict(&ekf, &motionData[i], dt);
@@ -131,53 +131,54 @@ int main() {
 
     }
 
-    fclose(fekf);
-    free(motionData);
-    printf("Finished\n");
+    fclose(fekf); //Close File
+    free(motionData); //Clear alloacted memory
+    printf("Finished\n"); //Print finished statement
 }
 
 
-uint8_t fileFind(char* fileName, uint8_t *index){
-    if (fileName == NULL || index ==NULL) {
+uint8_t fileFind(char* fileName, uint8_t *index){ //Find file function
+    if (fileName == NULL || index ==NULL) { //If invalid inputs, return error
         printf("ERROR: Invalid fileFind inputs\n");
         return 0;
     }
-    char temp_name[20];
-    while(1){
-        if (*index == 255) {
+    char temp_name[20]; //Temp variable storage
+    while(1){ //Repeat till error or found
+        if (*index == 255) { //If index exceed 255, return error
             printf("ERROR: File not found!\n");
             return 0;
         }
-        sprintf(temp_name,"log%d.csv",*index);
-        FILE *f = fopen(temp_name,"r");
-        if (f){
-            strcpy(fileName,temp_name);
-            fclose(f);
+        sprintf(temp_name,"log%d.csv",*index); //Get filename string
+        FILE *f = fopen(temp_name,"r"); //Attempt open file
+        if (f){ //If opens
+            strcpy(fileName,temp_name); //Copy string
+            fclose(f); //Close file
             printf("File found\n");
             return 1;
         }
-        (*index)++;
+        (*index)++; //Increase index if not opened
     }
 }
 
-uint8_t importData(Raw_data_struct *rawData, char *fileName, uint32_t *count){
-    if (rawData == NULL || fileName == NULL) {
+uint8_t importData(Raw_data_struct *rawData, char *fileName, uint32_t *count){ //Import data function
+    if (rawData == NULL || fileName == NULL) { //If inputs are invalid, stop code
         printf("ERROR: Invalid importData inputs\n");
         return 0;
     }
-    char line[1024];
-    FILE *fptr = fopen(fileName,"r");
-    if (!fptr) {
+    char line[1024]; //Temp variable to store line of csv
+    FILE *fptr = fopen(fileName,"r"); //Open file for reading
+    if (!fptr) { //If not opened return error
         printf("ERROR: Failed to open file\n");
         return 0;
     }
-    fgets(line,sizeof(line),fptr);
-    while(fgets(line,sizeof(line),fptr)) {
-        if (*count>=maxData){
-            printf("ERROR: Too muich Data");
+    fgets(line,sizeof(line),fptr); //Get header line from csv
+    while(fgets(line,sizeof(line),fptr)) { //Repeat for lines with numbers
+        if (*count>=maxData){ //If the size of file is too large stop inputting data
+            printf("ERROR: Too much Data");
             return 0;
         }
-        uint8_t n = sscanf(
+        uint8_t n = sscanf( //Move data from temp line to corresponding struct location
+
             line,
             "%u,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f",
             &rawData[*count].time,
@@ -193,27 +194,27 @@ uint8_t importData(Raw_data_struct *rawData, char *fileName, uint32_t *count){
             &rawData[*count].gy,
             &rawData[*count].gz
         );
-        if (n != 12) {
+        if (n != 12) { //If unsucessful read
             printf("ERROR: Failed to read file\n");
             return 0;
         }
-        (*count)++;  
+        (*count)++;  //Increase count
     }
     printf("Finished Reading File\n");
     return 1;
 }
 
-uint8_t fillAvgData(uint32_t dataPoints, Raw_data_struct *rawData, avgdata *avgData){
-    if (dataPoints == 0 || rawData == NULL || avgData  == NULL) {
+uint8_t fillAvgData(uint32_t dataPoints, Raw_data_struct *rawData, avgdata *avgData){ //Fill avg data struct
+    if (dataPoints == 0 || rawData == NULL || avgData  == NULL) { //If inputs are invalid, stop code
         printf("ERROR: Invalid fillAvgData inputs\n");
         return 0;
     }
-    for (uint32_t i=0; i<dataPoints; i++) {
+    for (uint32_t i=0; i<dataPoints; i++) { //Get corresponding data from raw to average
         avgData[i].time = rawData[i].time;
         avgData[i].humidity = rawData[i].humidity;
         avgData[i].temp_sens = rawData[i].temp_sens;
         avgData[i].temp_bmp = rawData[i].temp_bmp;
-        avgData[i].avg_temp = (rawData[i].temp_bmp + rawData[i].temp_sens)/2;
+        avgData[i].avg_temp = (rawData[i].temp_bmp + rawData[i].temp_sens)/2; //Calculate average data
         avgData[i].pressure = rawData[i].pressure;
         avgData[i].altitude = rawData[i].altitude;
     }
@@ -221,20 +222,20 @@ uint8_t fillAvgData(uint32_t dataPoints, Raw_data_struct *rawData, avgdata *avgD
     return 1;
 }
 
-uint8_t writeAvgData(avgdata *avgData, uint8_t index, uint32_t dataPoints){
-    if (avgData == NULL) {
+uint8_t writeAvgData(avgdata *avgData, uint8_t index, uint32_t dataPoints){ //Write average data to file
+    if (avgData == NULL) { //If data struct is invalif, stop code
         printf("ERROR: Invalid writeAvgData inputs\n");
         return 0;
     }
-    char avgDataFileName[50];
-    sprintf(avgDataFileName,"LogAvgData%d.csv",index);
-    FILE *favg = fopen(avgDataFileName,"w");
-    if (!favg) {
+    char avgDataFileName[50]; //File name temp
+    sprintf(avgDataFileName,"LogAvgData%d.csv",index); //Create filename from previous index, so number aligns
+    FILE *favg = fopen(avgDataFileName,"w"); //Open file
+    if (!favg) { //If not opened, stop code
         printf("ERROR: Failed to open LogAvgData.csv\n");
         return 0;
     }
-    fprintf(favg,"Time_ms,Humidity_%%,Temp_C,Temp_BMP_C,Avg_Temp_C,Pressure_kPa,Altitude_M\n");
-    for (uint32_t i=0; i<dataPoints; i++) {
+    fprintf(favg,"Time_ms,Humidity_%%,Temp_C,Temp_BMP_C,Avg_Temp_C,Pressure_kPa,Altitude_m\n"); //Print header
+    for (uint32_t i=0; i<dataPoints; i++) { //Print line for each datapoint
         fprintf(favg,
             "%u,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n",
             avgData[i].time,
@@ -246,12 +247,12 @@ uint8_t writeAvgData(avgdata *avgData, uint8_t index, uint32_t dataPoints){
             avgData[i].altitude
         );
     }
-    fclose(favg);
+    fclose(favg); //Close file
     printf("Finished Writing LogAvgData.csv\n");
     return 1;
 }
 
-uint8_t fillMotionData(uint32_t dataPoints, Raw_data_struct *rawData, motiondata *motionData){
+uint8_t fillMotionData(uint32_t dataPoints, Raw_data_struct *rawData, motiondata *motionData){ //Same as avgDataFill
     if (dataPoints <= 0 || rawData == NULL || motionData  == NULL) {
         printf("ERROR: Invalid fillMotionData inputs\n");
         return 0;
@@ -259,7 +260,7 @@ uint8_t fillMotionData(uint32_t dataPoints, Raw_data_struct *rawData, motiondata
     for (uint32_t i=0; i<dataPoints; i++) {
         motionData[i].time = rawData[i].time;
         motionData[i].altitude = rawData[i].altitude;
-        motionData[i].ax = -rawData[i].az;
+        motionData[i].ax = -rawData[i].az; //Converts from chip realtive orientation to world orientation
         motionData[i].ay = -rawData[i].ax;
         motionData[i].az = -rawData[i].ay;
         motionData[i].gx = -rawData[i].gz;
@@ -270,7 +271,7 @@ uint8_t fillMotionData(uint32_t dataPoints, Raw_data_struct *rawData, motiondata
     return 1;
 }
 
-uint8_t writeMotionData(motiondata *motionData, uint8_t index, uint32_t dataPoints){
+uint8_t writeMotionData(motiondata *motionData, uint8_t index, uint32_t dataPoints){ //Same as write avgDataFile
     if (motionData == NULL) {
         printf("ERROR: Invalid writeMotionData inputs\n");
         return 0;
@@ -301,7 +302,7 @@ uint8_t writeMotionData(motiondata *motionData, uint8_t index, uint32_t dataPoin
     return 1;
 }
 
-void ekf_init(ekf_state *ekf, const motiondata *m) {
+void ekf_init(ekf_state *ekf, const motiondata *m) { //Initialtes EKF
     // Initialize state
     for (int i = 0; i < 9; i++) {
         ekf->X[i] = 0.0f;
@@ -334,13 +335,13 @@ void ekf_init(ekf_state *ekf, const motiondata *m) {
 
 
     // Measurement noise variance for altitude
-    ekf->R = 0.2f; // 0.5 m std → 0.25 m^2 variance
+    ekf->R = 0.2f;
 }
 
 
 void body_to_world(float roll, float pitch, float yaw,
                    float ax, float ay, float az,
-                   float *wx, float *wy, float *wz){
+                   float *wx, float *wy, float *wz){ //Converts from realtive velocity to world frame
     float cr = cosf(roll);
     float sr = sinf(roll);
     float cp = cosf(pitch);
@@ -353,7 +354,7 @@ void body_to_world(float roll, float pitch, float yaw,
     *wz = -sp*ax   + sr*cp*ay              + cr*cp*az;
 }
 
-void ekf_predict(ekf_state *ekf, const motiondata *m, float dt) {
+void ekf_predict(ekf_state *ekf, const motiondata *m, float dt) { //EKF prediction step
     const float DEG2RAD = 0.0174532925f;
 
     // 1. Integrate gyro → orientation (roll, pitch, yaw)
@@ -398,7 +399,7 @@ void ekf_predict(ekf_state *ekf, const motiondata *m, float dt) {
 
 }
 
-void ekf_update_altitude(ekf_state *ekf, float alt_measure) {
+void ekf_update_altitude(ekf_state *ekf, float alt_measure) { //Update EKF with barometer reading
     // Measurement residual: z_meas - z_pred
     float y = alt_measure - ekf->X[8];
 
